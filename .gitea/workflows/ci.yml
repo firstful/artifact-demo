@@ -27,7 +27,7 @@ jobs:
         run: |
           set -e
           apt-get update -qq
-          apt-get install -y -qq golang-go docker.io curl >/dev/null
+          apt-get install -y -qq golang-go docker.io curl
           SHA8=${GITHUB_SHA:0:8}
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SHA8}" -o demo-bin ./...
           sha256sum demo-bin | tee demo-bin.sha256
