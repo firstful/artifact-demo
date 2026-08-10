@@ -100,7 +100,7 @@ jobs:
             "${API}/demo-bin.sha256" -o dl-api-demo-bin.sha256
           # artifact bytes must equal package bytes
           sha256sum dl-api-demo-bin
-          sha256sum -c dl/demo-bin.sha256
+          sha256sum -c <(sed "s|demo-bin|dl/demo-bin|" dl/demo-bin.sha256)
           # the package's own checksum sidecar must also match
           sha256sum -c <(sed "s|demo-bin|dl-api-demo-bin|" dl-api-demo-bin.sha256)
           echo "PACKAGE_OK"
