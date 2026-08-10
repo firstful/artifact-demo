@@ -49,7 +49,7 @@ jobs:
           echo "${{ secrets.REGISTRY_PUSH_TOKEN }}" | docker login 192.168.1.2:3000 -u reeds --password-stdin
           SHA8=${GITHUB_SHA:0:8}
           IMG=192.168.1.2:3000/reeds/artifact-demo
-          docker build -t ${IMG}:latest -t ${IMG}:${SHA8} .
+          docker build --build-arg VERSION=${SHA8} -t ${IMG}:latest -t ${IMG}:${SHA8} .
           docker push ${IMG}:latest
           docker push ${IMG}:${SHA8}
 
