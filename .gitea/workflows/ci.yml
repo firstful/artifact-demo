@@ -1,0 +1,108 @@
+name: build-and-package
+
+# Producer workflow: builds a Go binary, uploads it as a Gitea Actions
+# artifact, pushes a container image to the Gitea registry, and publishes
+# the same binary as a Generic Gitea Package. The verify job then proves
+# all three outputs are the same bytes.
+#
+# Secrets: REGISTRY_PUSH_TOKEN (repo-level) = PAT with write:package +
+# write:repository scopes (see ops/gitea-artifacts-packages.md).
+# GITHUB_TOKEN has NO permissions by default (owner actions.config
+# token_permission_mode is unset) — always use REGISTRY_PUSH_TOKEN.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: [self-hosted]
+    container:
+      image: golang:1.24-bookworm
+      # DinD socket lives in the runner's shared emptyDir; re-mount it like
+      # ci-pipelines build-*.yml does.
+      options: -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build binary
+        run: |
+          set -e
+          SHA8=${GITHUB_SHA:0:8}
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SHA8}" -o demo-bin ./...
+          sha256sum demo-bin | tee demo-bin.sha256
+          ./demo-bin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-bin
+          path: |
+            demo-bin
+            demo-bin.sha256
+          retention-days: 14
+
+      - name: Push container image to Gitea registry
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq docker.io >/dev/null
+          echo "${{ secrets.REGISTRY_PUSH_TOKEN }}" | docker login 192.168.1.2:3000 -u reeds --password-stdin
+          SHA8=${GITHUB_SHA:0:8}
+          IMG=192.168.1.2:3000/reeds/artifact-demo
+          docker build -t ${IMG}:latest -t ${IMG}:${SHA8} .
+          docker push ${IMG}:latest
+          docker push ${IMG}:${SHA8}
+
+      - name: Publish generic package (REST API)
+        run: |
+          set -e
+          SHA8=${GITHUB_SHA:0:8}
+          API=http://192.168.1.2:3000/api/packages/reeds/generic/artifact-demo/${SHA8}
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            -X PUT -H "Content-Type: application/octet-stream" \
+            --data-binary @demo-bin "${API}/demo-bin"
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            -X PUT -H "Content-Type: text/plain" \
+            --data-binary @demo-bin.sha256 "${API}/demo-bin.sha256"
+          echo "generic package published: artifact-demo ${SHA8}"
+
+  verify:
+    needs: build
+    runs-on: [self-hosted]
+    container:
+      image: golang:1.24-bookworm
+    steps:
+      - name: Download artifact (same-run, actions/download-artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-bin
+          path: dl
+
+      - name: Run downloaded binary and assert output
+        run: |
+          set -e
+          chmod +x dl/demo-bin
+          SHA8=${GITHUB_SHA:0:8}
+          out=$(./dl/demo-bin)
+          echo "binary says: ${out}"
+          test "${out}" = "hello from gitea artifact ${SHA8}"
+          test "$(./dl/demo-bin --version)" = "${SHA8}"
+          echo "ARTIFACT_OK"
+
+      - name: Pull generic package via REST API and compare checksums
+        run: |
+          set -e
+          SHA8=${GITHUB_SHA:0:8}
+          API=http://192.168.1.2:3000/api/packages/reeds/generic/artifact-demo/${SHA8}
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            "${API}/demo-bin" -o dl-api-demo-bin
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            "${API}/demo-bin.sha256" -o dl-api-demo-bin.sha256
+          # artifact bytes must equal package bytes
+          sha256sum dl-api-demo-bin
+          sha256sum -c dl/demo-bin.sha256
+          # the package's own checksum sidecar must also match
+          sha256sum -c <(sed "s|demo-bin|dl-api-demo-bin|" dl-api-demo-bin.sha256)
+          echo "PACKAGE_OK"

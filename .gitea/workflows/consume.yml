@@ -1,0 +1,81 @@
+name: consume-artifacts
+
+# Consumer workflow (manual dispatch): picks up the LATEST successful
+# build-and-package run and re-uses its outputs — no rebuild. Proves the
+# three cross-run consumption paths:
+#   1. Actions artifact zip via REST API  (GET /actions/artifacts/{id}/zip)
+#   2. Generic Gitea package via REST API (GET /api/packages/...)
+#   3. Container image from the Gitea registry (docker pull + run)
+# All three must be the same bytes / produce the same version.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  consume:
+    runs-on: [self-hosted]
+    container:
+      image: golang:1.24-bookworm
+      options: -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Find latest successful build-and-package run
+        id: find
+        run: |
+          set -e
+          RUN=$(curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/workflows/ci.yml/runs?status=success&limit=1")
+          echo "$RUN" | head -c 300; echo
+          RUN_ID=$(echo "$RUN" | python3 -c "import sys,json; print(json.load(sys.stdin)['workflow_runs'][0]['id'])")
+          SHA=$(echo "$RUN" | python3 -c "import sys,json; print(json.load(sys.stdin)['workflow_runs'][0]['head_sha'][:8])")
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "sha8=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest successful ci.yml run: ${RUN_ID} (sha ${SHA})"
+
+      - name: Download artifact zip via REST API
+        run: |
+          set -e
+          RUN_ID=${{ steps.find.outputs.run_id }}
+          ART=$(curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/runs/${RUN_ID}/artifacts?name=demo-bin")
+          ART_ID=$(echo "$ART" | python3 -c "import sys,json; print(json.load(sys.stdin)['entries'][0]['id'])")
+          echo "artifact id: ${ART_ID}"
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
+            "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/artifacts/${ART_ID}/zip" -o art.zip
+          unzip -o art.zip
+          chmod +x demo-bin
+          ls -la demo-bin demo-bin.sha256
+
+      - name: Run artifact binary
+        run: |
+          set -e
+          out=$(./demo-bin)
+          echo "artifact binary says: ${out}"
+          test "${out}" = "hello from gitea artifact ${{ steps.find.outputs.sha8 }}"
+          echo "ARTIFACT_OK"
+
+      - name: Fetch generic package (same version) and compare checksums
+        run: |
+          set -e
+          SHA8=${{ steps.find.outputs.sha8 }}
+          API=http://192.168.1.2:3000/api/packages/reeds/generic/artifact-demo/${SHA8}
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" "${API}/demo-bin" -o pkg-demo-bin
+          curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" "${API}/demo-bin.sha256" -o pkg-demo-bin.sha256
+          sha256sum pkg-demo-bin
+          # sidecar checksum from the package must match the downloaded package bytes
+          sha256sum -c <(sed "s|demo-bin|pkg-demo-bin|" pkg-demo-bin.sha256)
+          # and the package bytes must equal the artifact bytes
+          test "$(sha256sum demo-bin | cut -d' ' -f1)" = "$(sha256sum pkg-demo-bin | cut -d' ' -f1)"
+          echo "PACKAGE_OK"
+
+      - name: Pull and run container image from Gitea registry
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq docker.io unzip >/dev/null
+          echo "${{ secrets.REGISTRY_PUSH_TOKEN }}" | docker login 192.168.1.2:3000 -u reeds --password-stdin
+          SHA8=${{ steps.find.outputs.sha8 }}
+          docker pull 192.168.1.2:3000/reeds/artifact-demo:${SHA8}
+          out=$(docker run --rm 192.168.1.2:3000/reeds/artifact-demo:${SHA8})
+          echo "container says: ${out}"
+          test "${out}" = "hello from gitea artifact ${SHA8}"
+          echo "CONTAINER_OK"
