@@ -13,10 +13,8 @@ on:
 
 jobs:
   consume:
+    # Default runner container node:22-bookworm — has node for JS actions.
     runs-on: [self-hosted]
-    container:
-      image: golang:1.24-bookworm
-      options: -v /var/run/docker.sock:/var/run/docker.sock
     steps:
       - name: Find latest successful build-and-package run
         id: find
@@ -34,6 +32,8 @@ jobs:
       - name: Download artifact zip via REST API
         run: |
           set -e
+          apt-get update -qq
+          apt-get install -y -qq unzip >/dev/null
           RUN_ID=${{ steps.find.outputs.run_id }}
           ART=$(curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
             "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/runs/${RUN_ID}/artifacts?name=demo-bin")
@@ -71,7 +71,7 @@ jobs:
         run: |
           set -e
           apt-get update -qq
-          apt-get install -y -qq docker.io unzip >/dev/null
+          apt-get install -y -qq docker.io unzip curl >/dev/null
           echo "${{ secrets.REGISTRY_PUSH_TOKEN }}" | docker login 192.168.1.2:3000 -u reeds --password-stdin
           SHA8=${{ steps.find.outputs.sha8 }}
           docker pull 192.168.1.2:3000/reeds/artifact-demo:${SHA8}

@@ -16,12 +16,9 @@ on:
 
 jobs:
   build:
+    # Default runner container is node:22-bookworm (JS actions need node —
+    # overriding with a golang image breaks checkout/upload-artifact).
     runs-on: [self-hosted]
-    container:
-      image: golang:1.24-bookworm
-      # DinD socket lives in the runner's shared emptyDir; re-mount it like
-      # ci-pipelines build-*.yml does.
-      options: -v /var/run/docker.sock:/var/run/docker.sock
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,6 +26,8 @@ jobs:
       - name: Build binary
         run: |
           set -e
+          apt-get update -qq
+          apt-get install -y -qq golang-go docker.io curl >/dev/null
           SHA8=${GITHUB_SHA:0:8}
           CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${SHA8}" -o demo-bin ./...
           sha256sum demo-bin | tee demo-bin.sha256
@@ -46,8 +45,7 @@ jobs:
       - name: Push container image to Gitea registry
         run: |
           set -e
-          apt-get update -qq
-          apt-get install -y -qq docker.io >/dev/null
+          # DinD socket lives in the runner's shared emptyDir (auto-mounted)
           echo "${{ secrets.REGISTRY_PUSH_TOKEN }}" | docker login 192.168.1.2:3000 -u reeds --password-stdin
           SHA8=${GITHUB_SHA:0:8}
           IMG=192.168.1.2:3000/reeds/artifact-demo
@@ -71,8 +69,6 @@ jobs:
   verify:
     needs: build
     runs-on: [self-hosted]
-    container:
-      image: golang:1.24-bookworm
     steps:
       - name: Download artifact (same-run, actions/download-artifact)
         uses: actions/download-artifact@v4
@@ -94,6 +90,8 @@ jobs:
       - name: Pull generic package via REST API and compare checksums
         run: |
           set -e
+          apt-get update -qq
+          apt-get install -y -qq curl >/dev/null
           SHA8=${GITHUB_SHA:0:8}
           API=http://192.168.1.2:3000/api/packages/reeds/generic/artifact-demo/${SHA8}
           curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
