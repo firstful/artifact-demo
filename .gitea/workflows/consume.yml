@@ -37,7 +37,7 @@ jobs:
           RUN_ID=${{ steps.find.outputs.run_id }}
           ART=$(curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
             "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/runs/${RUN_ID}/artifacts?name=demo-bin")
-          ART_ID=$(echo "$ART" | python3 -c "import sys,json; print(json.load(sys.stdin)['entries'][0]['id'])")
+          ART_ID=$(echo "$ART" | python3 -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['id'])")
           echo "artifact id: ${ART_ID}"
           curl -fsS -u reeds:"${{ secrets.REGISTRY_PUSH_TOKEN }}" \
             "http://192.168.1.2:3000/api/v1/repos/reeds/artifact-demo/actions/artifacts/${ART_ID}/zip" -o art.zip
